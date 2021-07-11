@@ -9,9 +9,10 @@ The framework is a white-box model with simple rationale: real life natural and 
 ## Performance in real life scenarios
 This framework was in part inspired by and used in Boston Consulting Group (BSG) Gamma hackathon to solve a task of forecasting multiple (~1350) time-series of hourly frequency for a full one quarter of the year, thus yielding $90*24=2160$ data points to predict. It outperforms, both in interpretability and goodness of fit, all other ML models that were tried for achieving best predictions, including regression-based models (incl. Lasso, ElasticNet and SARIMA), ANNs, random forests and boosted trees, and also FaceBook Prophet library, specially dedicated to time-series forecasting.
 
-Examples of the use of the framework, experience with the contest along with optimal solution, and its merits and perfomance in a real life problem are described in an article structured as a Jupyter Notebook and availible at [Contest Solution & Real Life Use](https://nbviewer.jupyter.org/github/andrewargatkiny/seasonality-chains/blob/master/Contest%20Solution%20%26%20Real%20Life%20Use.ipynb). Give it a read!
+Examples of the use of the framework, experience with the contest along with optimal solution, and its merits and perfomance in a real life problem are described in an article structured as a Jupyter Notebook and availible at [Contest Solution & Real Life Use](https://nbviewer.jupyter.org/github/andrewargatkiny/seasonality-chains/blob/master/Contest%20Solution%20%26%20Real%20Life%20Use.ipynb). 
+Give it a read!
 
-## Usage, feautures and current limitations
+## Usage, features and current limitations
 The framework uses 2 types of models which represent building blocks for the chains of seasonality:
 * UniformModel(output frequency) – takes input time-series and uniformly upsamples it into output frequency;
 * SeasonalModel(output frequency) – can be trained on past high-frequency data to estimate and store seasonal weights (indices) for compatible lower frequnces. It takes input time-series, converts to output frequency using UniformModel and, if its original frequency matches one with availible indices, applies them to the series to get final prediction.
