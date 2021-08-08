@@ -16,19 +16,51 @@ class TimeModel():
       self.output_freq = output_freq
       self.stype = stype
 
+class MedianModel(TimeModel):
+    """Produces output time-series all values of which are median of 
+    previous period of some length"""
+    def __init__(self, output_freq, stype='multiplicative', datatype='flow'):
+      """
+      Initialises a model with given output frequency
+      """
+      super().__init__(output_freq, stype=stype)
+      self.name = 'MedianModel ' + self.output_freq
+      self.datatype = datatype
+
+    def train(self, time_series: pd.Series):
+      """Trains the model by calculating median of input time-series"""
+      if time_series.index.freq != self.output_freq:
+        raise Exception('Input time-series must have the same frequency as\
+        desired output frequency')   
+      self.median = time_series.median()
+
+    def predict(self, time_series):
+      """
+      (Optionally) converts low-frequency time_series into desired higher 
+      frequency, and replaces all values in it by a single value - 
+      median calculated previously in train()
+      """
+      if time_series.isnull().any(): 
+        raise Exception(time_series, 'None values in input time series')
+      inds = time_series.resample(self.output_freq).asfreq().index
+      prediction = pd.Series([self.median] * len(inds), index=inds)
+      return prediction
+
+
 class UniformModel(TimeModel):
     """Produces output time-series, uniformly partitioning input 
     time series values to get desired frequency"""
 
-    def __init__(self, output_freq, stype='multiplicative'):
+    def __init__(self, output_freq, stype='multiplicative', datatype='flow'):
       """
       Initialises a model with given output frequency
       """
-      super().__init__(output_freq, stype='multiplicative')
+      super().__init__(output_freq, stype=stype)
       self.name = 'UniformModel ' + self.output_freq
+      self.datatype = datatype
 
     def train(self, *args):
-      pass   
+      pass
 
     def predict_1step(self, total_value, input_freq, start_dt):
         """
@@ -78,9 +110,9 @@ class UniformModel(TimeModel):
                 out_end_dt = end_dt.to_period('w').end_time
                 unaligned_week_lday = True
                 last_day_shift = end_dt.weekday() + 1
-
-            new_elapsed_days = (out_end_dt - out_start_dt).round('d').days
-            total_value *= new_elapsed_days / old_elapsed_days
+            if self.datatype == 'flow':
+              new_elapsed_days = (out_end_dt - out_start_dt).round('d').days
+              total_value *= new_elapsed_days / old_elapsed_days
 
         output_index = pd.period_range(
             start = out_start_dt.to_period(self.output_freq),
@@ -89,7 +121,10 @@ class UniformModel(TimeModel):
         )
         # Just dividing total_value by number of new periods
         if total_value != 0:
-          pred_vals = total_value / len(output_index)
+          if self.datatype == 'flow':
+            pred_vals = total_value / len(output_index)
+          else:
+             pred_vals = total_value
         else:
           pred_vals = 0
         result_ts = pd.Series(pred_vals, index=output_index)
@@ -98,6 +133,15 @@ class UniformModel(TimeModel):
           return (result_ts, unaligned_week_lday, last_day_shift)
         else:
           return result_ts
+    def _get_frequency_str(ts: pd.Series):
+      """
+      Returns: string representation of a series' frequency in terms
+      used by the framework
+      """
+      # Ugly Hack
+      input_freq = ts.index.freq.freqstr.lower().split('-')[0]
+      if input_freq == 'a': input_freq = 'y'
+      return input_freq
 
     def predict(self, time_series):
       """
@@ -105,18 +149,21 @@ class UniformModel(TimeModel):
       of frequency upsampling to each term of the series separately and combining
       and combining results into a single sequence.
       """
-      # Ugly Hack
-      input_freq = time_series.index.freq.freqstr.lower().split('-')[0]
-      if input_freq == 'a': input_freq = 'y'
-      self.input_freq = input_freq
+      self.input_freq = UniformModel._get_frequency_str(time_series)
       
       if time_series.isnull().any(): 
         raise Exception(time_series, 'None values in input time series')
       
+      if self.input_freq == self.output_freq:
+        return time_series.copy()
       # A shortcut to speed up the calculations
       if self.output_freq != 'w':
-        prediction = time_series.resample(self.output_freq).asfreq() \
-        .fillna(0).resample(input_freq).transform(np.mean)
+        if self.datatype == 'flow':
+          prediction = time_series.resample(self.output_freq).asfreq() \
+          .fillna(0).resample(self.input_freq).transform(np.mean)
+        else:
+          prediction = time_series.resample(self.output_freq).asfreq() \
+          .fillna(method='pad')
         return prediction
 
       parts = []
@@ -124,7 +171,7 @@ class UniformModel(TimeModel):
       for i in range(len(time_series)):
         start_time = time_series.index[i].start_time
         parts.append(
-            self.predict_1step(time_series[i], input_freq, start_time))
+            self.predict_1step(time_series[i], self.input_freq, start_time))
         
       # If we need to get weekly data, we combine together 2 predictions for
       # one last/first week in the junction of 2 series for different periods
@@ -153,7 +200,8 @@ class SeasonalModel(UniformModel):
     A model which predicts higher frequency output time-series 
     applying seasonality ratios to input lower frequency time-series
     """
-    def check_dates_align(self, time_series, freq_name):
+    def check_dates_align(self, time_series, freq_name, 
+    drop_leap_day=True):
       """
       If time_series doesn't begin at first moment of specified
       freq_name, the function returns ts with indices complemented 
@@ -181,7 +229,7 @@ class SeasonalModel(UniformModel):
 
       # When calculating hourly or daily seasolanity by year, it's 
       # necessary to delete leap day
-      if self.output_freq in ['h', '2h', '4h', '8h', 'd'] \
+      if drop_leap_day and self.output_freq in ['h', '2h', '4h', '8h', 'd'] \
                                     and freq_name == 'y':
         inds_to_drop = time_series.index[(time_series.index.month == 2) 
                                 & (time_series.index.day == 29)].values
@@ -270,24 +318,27 @@ class SeasonalModel(UniformModel):
         return (seasons['seasonality'] - seasons['mean']).fillna(0)
 
     def __init__(self, output_freq, stype='multiplicative', 
-        calc_func=get_seasonal_weights):
+        calc_func=get_seasonal_weights, datatype='flow',
+        highest_seasonality=False):
       """
       Initialises a model with given output frequency
+      highest_seasonality:
       """
-      super().__init__(output_freq, stype='multiplicative')
+      super().__init__(output_freq, stype=stype, datatype=datatype)
       self.calculation_func = calc_func
       self.name = 'SeasonalModel ' + self.output_freq
+      self.highest_seasonality = highest_seasonality
       
     def train(self, time_series, verbose=False):
       """
       This function calculates seasonality indices for all possible input 
-      frequences suitable for output_freq, and saves them to self.seasonal_weghts
+      frequences suitable for output_freq, and saves them to self.seasonal_weights
       """
       if time_series.index.freq != self.output_freq:
           raise Exception('training dataset must have same \
           frequency as output series')
       base_ts = time_series
-      self.seasonal_weghts = dict()
+      self.seasonal_weights = dict()
       # For each useful input frequency for the output frequency
       for freq_name, freq in mappings[self.output_freq]:
         curr_ts = base_ts.copy()
@@ -297,7 +348,7 @@ class SeasonalModel(UniformModel):
         # If number of periods for one cycle of seasonality is greater than
         # number of periods in input time series
         if freq > len(time_series):
-          self.seasonal_weghts.update({
+          self.seasonal_weights.update({
             freq_name : pd.Series([1] * freq, index=np.arange(freq))
           }) 
           continue
@@ -313,7 +364,7 @@ class SeasonalModel(UniformModel):
         if verbose:
           print(freq_name, freq)  
           print(curr_ts)    
-        self.seasonal_weghts.update({
+        self.seasonal_weights.update({
             freq_name : self.calculation_func(self, curr_ts, freq)
         }) 
         
@@ -328,18 +379,45 @@ class SeasonalModel(UniformModel):
       input_freq = self.input_freq
       if (self.output_freq in ['m', 'q']) and (input_freq in ['m', 'q']):
         input_freq = 'y'
+      if self.highest_seasonality:
+        input_freq = 'y'
       if input_freq in [item[0] for item in mappings[self.output_freq]]:
         aligned_index = self.check_dates_align(prediction, input_freq).\
             index
-        l = len(self.seasonal_weghts[input_freq])
+        l = len(self.seasonal_weights[input_freq])
         inds_np = np.tile(
-            self.seasonal_weghts[input_freq].index.values,
+            self.seasonal_weights[input_freq].index.values,
             int(np.ceil(len(aligned_index)/l))
         )
+        new_inds = pd.Series(
+          inds_np[:len(aligned_index)], index = aligned_index).rename('aligned')
+        pred_w_inds = pd.concat([prediction, new_inds], axis = 1)
+        seasonality = self.seasonal_weights[input_freq].rename('seasonality')
+        
+        # Dealing with leap days.
+        if self.output_freq in ['h', '2h', '4h', '8h', 'd'] \
+          and input_freq == 'y' and pred_w_inds.index.is_leap_year.any():
+          inds_to_replace = pred_w_inds.index[(pred_w_inds.index.month == 2) 
+                                  & (pred_w_inds.index.day == 29)].values
+          if len(inds_to_replace) > 0:
+            years = pred_w_inds.loc[inds_to_replace].index.year.unique()
+            leap_per_length = int(len(inds_to_replace) / len(years))
+            replacing_vals = pred_w_inds.shift(leap_per_length).loc[
+              inds_to_replace, 'prediction']
+            pred_w_inds.loc[inds_to_replace, 'prediction'] = replacing_vals 
+            # Negative index to ensure there's no collisions
+            leap_day_concat_inds = np.array((range(0, -leap_per_length, -1))) -1
+            pred_w_inds.loc[inds_to_replace, 'aligned'] = \
+              leap_day_concat_inds.tolist() * len(years)
+            # not 59 because of 0 based indexing
+            prev_day_to_leap = 58 * leap_per_length
+            seasonality = seasonality.append(pd.Series(
+              seasonality.iloc[
+                prev_day_to_leap: prev_day_to_leap + leap_per_length].values,
+              index = leap_day_concat_inds
+            )).rename('seasonality')
 
-        new_inds = pd.Series(inds_np[:len(aligned_index)], index = aligned_index).rename('aligned')
-        pred_w_inds = pd.concat([prediction, new_inds], axis = 1).dropna()
-        seasonality = self.seasonal_weghts[input_freq].rename('seasonality')
+        pred_w_inds = pred_w_inds.dropna()
         pred_w_seasons = pd.merge(left=pred_w_inds, right=seasonality,
             left_on='aligned', right_index=True, how='left'
         )
@@ -354,4 +432,158 @@ class SeasonalModel(UniformModel):
         else:
             prediction = pred_w_seasons['prediction'] + \
                 pred_w_seasons['seasonality']                   
+      return prediction
+
+class TimeWeekOfYear(SeasonalModel):
+    """Predicts output time-series with frequences higher or equal to
+    daily simultaneously taking into accont two types of seasonality:
+    a moment during the week and its approximate location within the year
+    timespan"""
+    HOLIDAYS = [
+        'January 1', 'January 2', 'January 3', 'January 4', 'January 7',
+        'February 23', 'March 8', 'May 1', 'May 9', 'June 12', 'November 4', 
+        'December 29', 'December 30', 'December 31'
+    ]
+    def __init__(self, output_freq, stype='multiplicative', datatype='flow',
+    calc_func=SeasonalModel.get_seasonal_weights,
+    excl_holidays=True, before_hol=0, after_hol=0):
+      """
+      Initialises a model with given output frequency
+      excl_holidays: calculates seasonality indices for user-defined holiday
+      days by exact yearly seasonality with no use of weekday alignment.
+      """
+      if output_freq not in ['h', '2h', '4h', '8h', 'd']:
+        raise Exception('TimeWeekOfYear model is able to output only up\
+          to a daily frequency')
+      super().__init__(output_freq, stype=stype, calc_func=calc_func)
+      self.name = ' '.join(['TimeWeekOfYear', self.output_freq,
+      'excl_holidays:', str(excl_holidays), 'before_hol:', str(before_hol),
+      'after_hol:', str(after_hol)]) 
+      self.datatype = datatype
+      self.highest_seasonality = True
+      self.excl_holidays = excl_holidays
+      self.before_hol = before_hol
+      self.after_hol = after_hol
+
+    def train(self, time_series: pd.Series):
+      """Trains seasonality indices shifting values ofeach year of data 
+      so that their first days of year fall on the same weekday"""
+      if time_series.index.freq != self.output_freq:
+        raise Exception('training dataset must have same \
+        frequency as output series')
+      # Need to refactor later
+      self.multiplier = 1
+      if self.output_freq == 'h': self.multiplier = 24
+      elif self.output_freq == '2h': self.multiplier = 48
+      # Getting weekdays of first day in all years of time_series
+      years = time_series.index.year.unique().astype(str)
+      inds_first_day = time_series.index.to_timestamp().is_year_start
+      first_days = time_series[inds_first_day] \
+        .index.weekday[::self.multiplier]
+      self.first_weekday = first_days[0]
+      # Shifting each year's data so every year starts on the same
+      # day of week.
+      yearly_ts = [time_series[years[0]]]
+      for i in range(1, len(first_days)):
+          shift = (first_days[i] - self.first_weekday) % 7
+          if shift > 3: shift = shift - 7
+          temp_ts = time_series.shift(shift * self.multiplier)[years[i]]
+          yearly_ts.append(temp_ts)
+      for ts in yearly_ts:
+        if ts.index[0].start_time.is_leap_year:
+          ts = ts[:-self.multiplier]
+          print(ts)
+      aligned_ts = pd.concat(yearly_ts)
+      self.weekmoment_weights = self.calculation_func(
+        self, aligned_ts, self.multiplier * 365
+      )
+      super().train(time_series)
+      self.standard_weights = self.seasonal_weights['y']
+
+    def predict(self, time_series):
+      """
+      Converts lower-frequency time_series into higher-frequency, applying a model of
+      frequency magnification separately to each term of the series and combining 
+      results into a single sequence 
+      """ 
+      prediction = UniformModel.predict(self, time_series)
+      prediction.rename('prediction', inplace=True)
+      input_freq = 'y'
+      
+      years = prediction.index.year.unique().astype(str)
+      inds_first_day = prediction.index.to_timestamp().is_year_start
+      first_days = prediction[inds_first_day].index.weekday[::self.multiplier]
+      # For each year in uniformly predicted time-series adjusting it with
+      # seasonal predictions aligned to fit same weekdays
+      weekmoment_preds = []
+      for i in range(len(years)):
+        curr_prediction = prediction[years[i]]
+        curr_first_weekday = first_days[i]
+        shift = (self.first_weekday - curr_first_weekday) % 7
+        if shift > 3: shift = shift - 7
+        #print(curr_first_weekday, self.first_weekday, shift)
+        # Replacing NAs caused by shifting with yearly seasonality
+        curr_seasonality = self.weekmoment_weights.shift(shift * 
+          self.multiplier)
+        mask = curr_seasonality.isna()
+        curr_seasonality[mask] = self.standard_weights[mask]
+        # Aligning indices and placing them together
+        aligned_index = self.check_dates_align(curr_prediction, input_freq, 
+          drop_leap_day=False).index
+        l = len(self.weekmoment_weights)
+        inds_np = np.tile(
+            self.weekmoment_weights.index.values,
+            int(np.ceil(len(aligned_index)/l))
+        )
+        new_inds = pd.Series(
+          inds_np[:len(aligned_index)], index = aligned_index).rename('aligned')
+        pred_w_inds = pd.concat([curr_prediction, new_inds], axis = 1)
+        pred_w_inds = pred_w_inds.dropna()
+        # Getting primary week-of-the-year prediction for current year
+        seasonality = curr_seasonality.rename('seas_weekmom')
+        pred_w_seasons = pd.merge(left=pred_w_inds, right=seasonality,
+            left_on='aligned', right_index=True, how='left'
+        )
+        if self.stype=='multiplicative':
+            pred_w_seasons['weekmom_pred'] = pred_w_seasons['prediction'] * \
+                pred_w_seasons['seas_weekmom']
+        else:
+            pred_w_seasons['weekmom_pred'] = pred_w_seasons['prediction'] + \
+                pred_w_seasons['seas_weekmom']                   
+        # Replacing NAs which happen at the end of any leap year and
+        # holidays with just a yearly seasonality
+        nulls = pred_w_seasons['weekmom_pred'].isnull()
+        if nulls.any() or self.excl_holidays:
+          pred_w_seasons['yearly_pred'] = super().predict(curr_prediction)
+        if nulls.any():
+          inds_null = pred_w_seasons[nulls]
+          pred_w_seasons.loc[inds_null, 'weekmom_pred'] = \
+            pred_w_seasons.loc[inds_null, 'yearly_pred']
+        if self.excl_holidays:
+          # Getting daily indices of holidays for current year
+          dates = []
+          for hol_date in TimeWeekOfYear.HOLIDAYS:
+            curr_date = pd.Timestamp(hol_date + ' ' + years[i], freq='d')
+            for rel_time in range(self.before_hol + 1):
+              dates.append(curr_date - rel_time * pd.DateOffset())
+            dates.append(curr_date)
+            for rel_time in range(self.after_hol + 1):
+              dates.append(curr_date + rel_time * pd.DateOffset())
+          # Converting them to higher frequency if necessary
+          dates_per = pd.PeriodIndex(dates, freq='d')
+          if self.output_freq == 'd':
+            dates = dates_per
+          else:
+            dates = pd.Series(0, index=dates_per).resample(self.output_freq)\
+            .asfreq().index
+          dates = dates.intersection(pred_w_seasons.index)
+          # Replacing weekday predictions of holidays and their preceding
+          # and following dates
+          pred_w_seasons.loc[dates, 'weekmom_pred'] = \
+            pred_w_seasons.loc[dates, 'yearly_pred']
+          
+        weekmoment_preds.append(pred_w_seasons['weekmom_pred'])
+        #print(pred_w_seasons[:].head(60))
+
+      prediction = pd.concat(weekmoment_preds)
       return prediction
