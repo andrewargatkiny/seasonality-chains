@@ -3,4 +3,5 @@
 __pycache__/
 columns_data.py
 icl_train.csv
-
+*.egg-info/
+dist/
