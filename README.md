@@ -91,9 +91,9 @@ print(chain.mae) # or print(chain.metrics)
 prediction = chain.predict(pd.Timestamp('2021-01'), pd.Timestamp('2021-10'))
 print(prediction) # or print(chain.prediction)
 ```
-More detailed examples of current version's features (basic and advanced) are coming later. As of now, you can learn about them with built-on python `help()` function passing any model or chain name to it as an argument.
+More detailed examples of current version's features (basic and advanced) are ~~coming later~~ availible in the `notebooks` directory. You can also learn about them with built-on python `help()` function passing any model or chain name to it as an argument.
 
-Examples of the use of the previous version, experience with the contest along with optimal solution, and its merits and perfomance in a real life problem are described in an article structured as a Jupyter Notebook and availible at [Contest Solution & Real Life Use](https://nbviewer.jupyter.org/github/andrewargatkiny/seasonality-chains/blob/master/Contest%20Solution%20%26%20Real%20Life%20Use.ipynb). 
+Examples of the use of the previous version, experience with the contest along with optimal solution, and its merits and perfomance in a real life problem are described in an article structured as a Jupyter Notebook and availible at [Contest Solution & Real Life Use](https://nbviewer.jupyter.org/github/andrewargatkiny/seasonality-chains/blob/master/notebooks/Contest%20Solution%20%26%20Real%20Life%20Use.ipynb). 
 Give it a read!
 
 # Versions history
